@@ -305,3 +305,10 @@ Do not upload sensitive materials that you do not want to send to the model prov
 
 Do not commit `.env`, API keys, or private `server-data` contents to a public repository.
 
+<p align="center">
+  <img src="public/brand/coursemate-logo.png" alt="CourseMate logo" width="132" />
+</p>
+
+<p align="center">
+  <strong>CourseMate</strong>
+</p>

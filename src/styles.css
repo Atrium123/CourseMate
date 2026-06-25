@@ -68,8 +68,74 @@ p {
   margin-bottom: 28px;
 }
 
+.brand-lockup {
+  display: inline-flex;
+  min-width: 220px;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-logo-button {
+  display: inline-flex;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.brand-logo-button:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+
+.brand-logo-button.is-wiggling .brand-logo {
+  animation: logo-wiggle 520ms ease-in-out;
+}
+
+.brand-logo {
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  transform-origin: 50% 78%;
+  will-change: transform;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+@keyframes logo-wiggle {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+
+  18% {
+    transform: rotate(-8deg);
+  }
+
+  36% {
+    transform: rotate(7deg);
+  }
+
+  54% {
+    transform: rotate(-5deg);
+  }
+
+  72% {
+    transform: rotate(3deg);
+  }
+}
+
 .topbar strong,
 .learning-topbar strong {
+  display: block;
   color: #0f172a;
   font-size: 1.2rem;
 }
@@ -472,10 +538,6 @@ p {
   height: 64px;
   margin-bottom: 10px;
   border-bottom: 0;
-}
-
-.learning-brand {
-  min-width: 240px;
 }
 
 .learning-toolbar {
@@ -1271,7 +1333,7 @@ p {
     justify-content: flex-start;
   }
 
-  .learning-brand,
+  .brand-lockup,
   .learning-toolbar {
     width: 100%;
     min-width: 0;

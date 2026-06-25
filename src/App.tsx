@@ -27,6 +27,7 @@ type ThemeMode = "light" | "dark";
 
 const acceptedFileTypes = ".pdf,.ppt,.pptx,.doc,.docx,.txt";
 const themeStorageKey = "coursemate-theme-mode";
+const logoPath = "/brand/coursemate-logo.png";
 
 function getLessonKey(partId: string) {
   return partId;
@@ -104,6 +105,7 @@ export default function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
     window.localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light",
   );
+  const [isLogoWiggling, setIsLogoWiggling] = useState(false);
   const [error, setError] = useState("");
 
   const totalFileSize = useMemo(
@@ -145,6 +147,26 @@ export default function App() {
       >
         {themeMode === "dark" ? "亮色模式" : "暗色模式"}
       </button>
+    );
+  }
+
+  function renderBrand(subtitle: string) {
+    return (
+      <div className="brand-lockup">
+        <button
+          className={isLogoWiggling ? "brand-logo-button is-wiggling" : "brand-logo-button"}
+          type="button"
+          aria-label="Play CourseMate logo animation"
+          onClick={() => setIsLogoWiggling(true)}
+          onAnimationEnd={() => setIsLogoWiggling(false)}
+        >
+          <img className="brand-logo" src={logoPath} alt="CourseMate logo" />
+        </button>
+        <div className="brand-copy">
+          <strong>CourseMate</strong>
+          <span>{subtitle}</span>
+        </div>
+      </div>
     );
   }
 
@@ -704,10 +726,7 @@ export default function App() {
     return (
       <main className={`app-shell loading-shell ${themeClass}`}>
         <header className="topbar">
-          <div>
-            <strong>CourseMate</strong>
-            <span>{selectedFiles.length || courseSession?.files.length || 0} 份资料</span>
-          </div>
+          {renderBrand(`${selectedFiles.length || courseSession?.files.length || 0} 份资料`)}
           {renderThemeToggle()}
         </header>
         <section className="loading-panel" aria-live="polite">
@@ -723,13 +742,11 @@ export default function App() {
     return (
       <main className={`learning-app ${themeClass}`}>
         <header className="learning-topbar">
-          <div className="learning-brand">
-            <strong>CourseMate</strong>
-            <span>
-              {courseSession.files.length} 份资料 · {courseSession.parts.length} 个讲解部分 ·{" "}
-              {formatFileSize(courseSession.totalSize)}
-            </span>
-          </div>
+          {renderBrand(
+            `${courseSession.files.length} 份资料 · ${courseSession.parts.length} 个讲解部分 · ${formatFileSize(
+              courseSession.totalSize,
+            )}`,
+          )}
 
           <section className="learning-toolbar" aria-label="学习操作">
             <button
@@ -983,10 +1000,7 @@ export default function App() {
   return (
     <main className={`app-shell upload-shell ${themeClass}`}>
       <header className="topbar">
-        <div>
-          <strong>CourseMate</strong>
-          <span>AI 课件老师</span>
-        </div>
+        {renderBrand("AI 课件老师")}
         {renderThemeToggle()}
       </header>
 
