@@ -1,3 +1,5 @@
+import type { AiModelId } from "./modelConfig";
+
 export interface UploadedMaterial {
   name: string;
   size: number;
@@ -30,6 +32,7 @@ export interface CourseSession {
   id: string;
   totalSize: number;
   createdAt: string;
+  modelId: AiModelId;
   files: CourseFile[];
   parts: CoursePart[];
 }
@@ -59,6 +62,7 @@ export type LessonMode = "detailed";
 export interface FollowUpAnswer {
   question?: string;
   answer: string;
+  modelId?: AiModelId;
   createdAt?: string;
 }
 

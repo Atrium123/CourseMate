@@ -21,6 +21,13 @@ import type {
   PartLesson,
   SessionLearningState,
 } from "../src/types";
+import {
+  defaultAiModelId,
+  getAiModelLabel,
+  isAiModelId,
+  normalizeAiModelId,
+  type AiModelId,
+} from "../src/modelConfig";
 
 dotenv.config();
 
@@ -34,7 +41,7 @@ const upload = multer({
 });
 
 const port = Number(process.env.SERVER_PORT ?? 3001);
-const model = process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash";
+const defaultModel = normalizeAiModelId(process.env.DEEPSEEK_MODEL ?? defaultAiModelId);
 const maxOutlineCharacters = Number(process.env.MAX_OUTLINE_CHARACTERS ?? 28000);
 const maxLessonCharacters = Number(process.env.MAX_LESSON_CHARACTERS ?? 60000);
 const dataDir = path.join(process.cwd(), "server-data", "history");
@@ -258,6 +265,7 @@ async function createOutlineForFile(
   fileId: string,
   fileName: string,
   extracted: ExtractedFileText,
+  modelId: AiModelId,
 ) {
   const text = normalizeText(extracted.text);
   const totalPages = Math.max(1, extracted.pages.length);
@@ -268,7 +276,7 @@ async function createOutlineForFile(
 
   const openai = createOpenAIClient();
   const completion = await openai.chat.completions.create({
-    model,
+    model: modelId,
     messages: [
       {
         role: "system",
@@ -329,7 +337,10 @@ ${buildPageLabeledText(extracted.pages, maxOutlineCharacters)}`,
   return parts && parts.length > 0 ? parts : buildFallbackParts(fileId, fileName, text, totalPages);
 }
 
-async function createCourseSession(files: Express.Multer.File[]): Promise<CourseSession> {
+async function createCourseSession(
+  files: Express.Multer.File[],
+  modelId: AiModelId,
+): Promise<CourseSession> {
   await ensureDataDir();
   const sessionId = crypto.randomUUID();
   const sessionDir = getSessionDir(sessionId);
@@ -371,7 +382,7 @@ async function createCourseSession(files: Express.Multer.File[]): Promise<Course
     const outlineParts = await createOutlineForFile(fileId, displayFileName, {
       ...extracted,
       text: extractedText,
-    });
+    }, modelId);
     const partIds: string[] = [];
 
     outlineParts.forEach((outlinePart, index) => {
@@ -404,6 +415,7 @@ async function createCourseSession(files: Express.Multer.File[]): Promise<Course
     id: sessionId,
     totalSize: files.reduce((sum, file) => sum + file.size, 0),
     createdAt: new Date().toISOString(),
+    modelId,
     files: courseFiles,
     parts,
   };
@@ -428,6 +440,7 @@ async function loadSession(sessionId: string) {
   }
 
   const session = await readJsonFile<CourseSession>(sessionPath);
+  session.modelId = normalizeAiModelId(session.modelId);
   sessions.set(sessionId, session);
   return session;
 }
@@ -509,8 +522,15 @@ function getLessonPath(sessionId: string, partId: string) {
   return path.join(getLessonsDir(sessionId), `${partId}.json`);
 }
 
-function getFollowUpsPath(sessionId: string, blockId: string) {
-  return path.join(getLessonsDir(sessionId), `followups-${blockId}.json`);
+function getFollowUpKey(partId: string, blockId: string) {
+  return `${partId}::${blockId}`;
+}
+
+function getFollowUpsPath(sessionId: string, partId: string, blockId: string) {
+  return path.join(
+    getLessonsDir(sessionId),
+    `followups-${encodeURIComponent(partId)}--${encodeURIComponent(blockId)}.json`,
+  );
 }
 
 async function readCachedLesson(sessionId: string, partId: string) {
@@ -527,8 +547,8 @@ async function writeCachedLesson(sessionId: string, lesson: PartLesson) {
   await writeJsonFile(getLessonPath(sessionId, lesson.partId), lesson);
 }
 
-async function readCachedFollowUps(sessionId: string, blockId: string) {
-  const followUpsPath = getFollowUpsPath(sessionId, blockId);
+async function readCachedFollowUps(sessionId: string, partId: string, blockId: string) {
+  const followUpsPath = getFollowUpsPath(sessionId, partId, blockId);
 
   if (!fssync.existsSync(followUpsPath)) {
     return [];
@@ -537,9 +557,14 @@ async function readCachedFollowUps(sessionId: string, blockId: string) {
   return readJsonFile<FollowUpAnswer[]>(followUpsPath);
 }
 
-async function appendCachedFollowUp(sessionId: string, blockId: string, answer: FollowUpAnswer) {
-  const currentAnswers = await readCachedFollowUps(sessionId, blockId);
-  await writeJsonFile(getFollowUpsPath(sessionId, blockId), [...currentAnswers, answer]);
+async function appendCachedFollowUp(
+  sessionId: string,
+  partId: string,
+  blockId: string,
+  answer: FollowUpAnswer,
+) {
+  const currentAnswers = await readCachedFollowUps(sessionId, partId, blockId);
+  await writeJsonFile(getFollowUpsPath(sessionId, partId, blockId), [...currentAnswers, answer]);
 }
 
 async function readLearningProgress(sessionId: string) {
@@ -573,15 +598,25 @@ async function readAllFollowUps(sessionId: string) {
   const files = await fs.readdir(lessonsDir).catch((): string[] => []);
   const entries = await Promise.all(
     files
-      .filter((fileName) => fileName.startsWith("followups-") && fileName.endsWith(".json"))
+      .filter((fileName) => /^followups-.+--.+\.json$/.test(fileName))
       .map(async (fileName) => {
-        const blockId = fileName.replace(/^followups-/, "").replace(/\.json$/, "");
+        const [, encodedPartId, encodedBlockId] =
+          fileName.match(/^followups-(.+)--(.+)\.json$/) ?? [];
+
+        if (!encodedPartId || !encodedBlockId) {
+          return null;
+        }
+
+        const partId = decodeURIComponent(encodedPartId);
+        const blockId = decodeURIComponent(encodedBlockId);
         const answers = await readJsonFile<FollowUpAnswer[]>(path.join(lessonsDir, fileName));
-        return [blockId, answers] as const;
+        return [getFollowUpKey(partId, blockId), answers] as const;
       }),
   );
 
-  return Object.fromEntries(entries);
+  return Object.fromEntries(
+    entries.filter((entry): entry is readonly [string, FollowUpAnswer[]] => entry !== null),
+  );
 }
 
 function buildLessonPrompt(part: CoursePart, session: CourseSession) {
@@ -680,7 +715,8 @@ app.get("/api/health", (_request, response) => {
     ok: true,
     provider: "deepseek",
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
-    model,
+    defaultModel,
+    defaultModelLabel: getAiModelLabel(defaultModel),
     usingPlaceholderKey: isPlaceholderApiKey(),
   });
 });
@@ -776,13 +812,14 @@ app.put("/api/sessions/:sessionId/progress", async (request, response) => {
 app.post("/api/materials", upload.array("materials", 20), async (request, response) => {
   try {
     const files = request.files as Express.Multer.File[] | undefined;
+    const modelId = normalizeAiModelId(request.body?.modelId);
 
     if (!files || files.length === 0) {
       response.status(400).json({ message: "请至少上传一份课程资料。" });
       return;
     }
 
-    const session = await createCourseSession(files);
+    const session = await createCourseSession(files, modelId);
     response.json(session);
   } catch (error) {
     const message = error instanceof Error ? error.message : "资料读取失败。";
@@ -852,7 +889,7 @@ app.post("/api/explain-part", async (request, response) => {
 
     const openai = createOpenAIClient();
     const completion = await openai.chat.completions.create({
-      model,
+      model: normalizeAiModelId(session.modelId),
       messages: [
         {
           role: "system",
@@ -892,7 +929,7 @@ app.post("/api/explain-part", async (request, response) => {
 
 app.post("/api/ask-block", async (request, response) => {
   try {
-    const { sessionId, partId, blockId, blockHeading, blockBody, question } =
+    const { sessionId, partId, blockId, blockHeading, blockBody, question, modelId } =
       request.body as {
       sessionId?: string;
       partId?: string;
@@ -900,6 +937,7 @@ app.post("/api/ask-block", async (request, response) => {
       blockHeading?: string;
       blockBody?: string;
       question?: string;
+      modelId?: unknown;
     };
 
     if (!sessionId || !partId || !blockId || !question?.trim()) {
@@ -909,6 +947,7 @@ app.post("/api/ask-block", async (request, response) => {
 
     const session = await loadSession(sessionId);
     const part = session?.parts.find((item) => item.id === partId);
+    const selectedModelId = isAiModelId(modelId) ? modelId : normalizeAiModelId(session?.modelId);
 
     if (!session || !part) {
       response.status(404).json({ message: "没有找到对应的讲解部分，请重新上传资料。" });
@@ -920,16 +959,17 @@ app.post("/api/ask-block", async (request, response) => {
         question: question.trim(),
         answer:
           "这是本地占位回答。真实 API Key 生效后，我会结合当前知识点、课件原文和你的问题继续用中文解释，并保留必要英文术语。",
+        modelId: selectedModelId,
         createdAt: new Date().toISOString(),
       } satisfies FollowUpAnswer;
-      await appendCachedFollowUp(sessionId, blockId, answer);
+      await appendCachedFollowUp(sessionId, partId, blockId, answer);
       response.json(answer);
       return;
     }
 
     const openai = createOpenAIClient();
     const completion = await openai.chat.completions.create({
-      model,
+      model: selectedModelId,
       messages: [
         {
           role: "system",
@@ -971,9 +1011,10 @@ JSON 要求：必须返回合法 JSON。如果 answer 里包含 LaTeX 或反斜�
     const answer = {
       ...parseJsonObject<FollowUpAnswer>(content),
       question: question.trim(),
+      modelId: selectedModelId,
       createdAt: new Date().toISOString(),
     };
-    await appendCachedFollowUp(sessionId, blockId, answer);
+    await appendCachedFollowUp(sessionId, partId, blockId, answer);
     response.json(answer);
   } catch (error) {
     const message = error instanceof Error ? error.message : "追问失败。";

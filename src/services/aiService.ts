@@ -6,13 +6,15 @@ import type {
   PartLesson,
   SessionLearningState,
 } from "../types";
+import type { AiModelId } from "../modelConfig";
 
-export async function createMaterialSession(files: File[]): Promise<CourseSession> {
+export async function createMaterialSession(files: File[], modelId: AiModelId): Promise<CourseSession> {
   const formData = new FormData();
 
   files.forEach((file) => {
     formData.append("materials", file);
   });
+  formData.append("modelId", modelId);
 
   const response = await fetch("/api/materials", {
     method: "POST",
@@ -62,6 +64,7 @@ export async function askAboutLessonBlock(input: {
   blockHeading: string;
   blockBody: string;
   question: string;
+  modelId: AiModelId;
 }): Promise<FollowUpAnswer> {
   const response = await fetch("/api/ask-block", {
     method: "POST",

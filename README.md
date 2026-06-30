@@ -248,6 +248,29 @@ DEEPSEEK_API_KEY=sk-coursemate-placeholder-key
 
 The placeholder key will not call a real model. It is only used for testing the local application flow.
 
+### Model Configuration
+
+CourseMate currently includes two DeepSeek model options in the UI:
+
+- `deepseek-v4-flash`
+- `deepseek-v4-pro`
+
+The model list is configured in:
+
+```text
+src/modelConfig.ts
+```
+
+`DEEPSEEK_MODEL` in `.env` is only the backend fallback default. Users can still choose a model from the upload page before generating a session.
+
+Both model options use the same DeepSeek API key:
+
+```text
+DEEPSEEK_API_KEY=your DeepSeek API key
+```
+
+You do not need to add another API key for `deepseek-v4-pro` as long as the same DeepSeek account has access to that model.
+
 ### Start the App
 
 ```bash

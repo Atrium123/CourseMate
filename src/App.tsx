@@ -20,6 +20,12 @@ import type {
   HistoryItem,
   PartLesson,
 } from "./types";
+import {
+  aiModelOptions,
+  defaultAiModelId,
+  normalizeAiModelId,
+  type AiModelId,
+} from "./modelConfig";
 import "katex/dist/katex.min.css";
 
 type AppPage = "upload" | "loading" | "learning";
@@ -29,8 +35,16 @@ const acceptedFileTypes = ".pdf,.ppt,.pptx,.doc,.docx,.txt";
 const themeStorageKey = "coursemate-theme-mode";
 const logoPath = "/brand/coursemate-logo.png";
 
+function getAskModelStorageKey(sessionId: string) {
+  return `coursemate-ask-model-${sessionId}`;
+}
+
 function getLessonKey(partId: string) {
   return partId;
+}
+
+function getBlockKey(partId: string, blockId: string) {
+  return `${partId}::${blockId}`;
 }
 
 function formatFileSize(size: number) {
@@ -102,6 +116,8 @@ export default function App() {
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, string>>({});
   const [answersByBlock, setAnswersByBlock] = useState<Record<string, FollowUpAnswer[]>>({});
   const [askingBlockIds, setAskingBlockIds] = useState<Set<string>>(new Set());
+  const [selectedUploadModelId, setSelectedUploadModelId] = useState<AiModelId>(defaultAiModelId);
+  const [selectedAskModelId, setSelectedAskModelId] = useState<AiModelId>(defaultAiModelId);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
     window.localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "light",
   );
@@ -170,6 +186,60 @@ export default function App() {
     );
   }
 
+  function renderModelSelect(
+    value: AiModelId,
+    onChange: (modelId: AiModelId) => void,
+    label: string,
+    showDescription = true,
+  ) {
+    const currentModel = aiModelOptions.find((modelOption) => modelOption.id === value);
+
+    return (
+      <div className="model-select">
+        <span className="model-select-label">{label}</span>
+        <details className="model-menu">
+          <summary>
+            <span>{currentModel?.label}</span>
+            <span className="model-menu-chevron" aria-hidden="true">
+              ›
+            </span>
+          </summary>
+          <div className="model-menu-list">
+          {aiModelOptions.map((modelOption) => (
+              <button
+                key={modelOption.id}
+                className={modelOption.id === value ? "selected" : ""}
+                type="button"
+                onClick={(event) => {
+                  onChange(normalizeAiModelId(modelOption.id));
+                  event.currentTarget.closest("details")?.removeAttribute("open");
+                }}
+              >
+                <span>{modelOption.label}</span>
+                {modelOption.id === value ? <span aria-hidden="true">✓</span> : null}
+              </button>
+          ))}
+          </div>
+        </details>
+        {showDescription ? <small>{currentModel?.description}</small> : null}
+      </div>
+    );
+  }
+
+  function getSavedAskModelId(session: CourseSession) {
+    return normalizeAiModelId(
+      window.localStorage.getItem(getAskModelStorageKey(session.id)) ?? session.modelId,
+    );
+  }
+
+  function updateAskModelId(modelId: AiModelId) {
+    setSelectedAskModelId(modelId);
+
+    if (courseSession) {
+      window.localStorage.setItem(getAskModelStorageKey(courseSession.id), modelId);
+    }
+  }
+
   function getPartStatus(partId: string) {
     const lessonKey = getLessonKey(partId);
 
@@ -226,6 +296,23 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    function closeModelMenus(event: PointerEvent) {
+      const target = event.target;
+
+      if (target instanceof Element && target.closest(".model-menu")) {
+        return;
+      }
+
+      document
+        .querySelectorAll<HTMLDetailsElement>(".model-menu[open]")
+        .forEach((menu) => menu.removeAttribute("open"));
+    }
+
+    document.addEventListener("pointerdown", closeModelMenus);
+    return () => document.removeEventListener("pointerdown", closeModelMenus);
+  }, []);
+
+  useEffect(() => {
     if (!courseSession) {
       return;
     }
@@ -265,10 +352,13 @@ export default function App() {
       setError("");
 
       try {
-        const session =
-          courseSession?.id === targetRoute.sessionId
-            ? courseSession
-            : await getMaterialSession(targetRoute.sessionId);
+        const isCurrentSession = courseSession?.id === targetRoute.sessionId;
+        const session = isCurrentSession ? courseSession : await getMaterialSession(targetRoute.sessionId);
+
+        if (!isCurrentSession) {
+          setSelectedAskModelId(getSavedAskModelId(session));
+        }
+
         setCourseSession(session);
         setActivePartId(targetRoute.partId);
         setPage("learning");
@@ -554,6 +644,7 @@ export default function App() {
       }
 
       lessonScrollTopRef.current = state.progress?.lessonScrollTop ?? 0;
+      setSelectedAskModelId(getSavedAskModelId(session));
       setCourseSession(session);
       navigateToPart(session, targetPart, {
         restorePdfPage: state.progress?.pdfPage ?? targetPart.pageStart,
@@ -601,7 +692,8 @@ export default function App() {
     setPrefetchingIds(new Set());
 
     try {
-      const session = await createMaterialSession(selectedFiles);
+      const session = await createMaterialSession(selectedFiles, selectedUploadModelId);
+      setSelectedAskModelId(normalizeAiModelId(session.modelId));
       setCourseSession(session);
       const firstPart = session.parts[0];
 
@@ -670,14 +762,19 @@ export default function App() {
   }
 
   function handleBlockClick(blockId: string, pageNumber: number) {
-    setActivePdfPage(pageNumber);
-
-    if (focusedBlockId === blockId) {
-      setAskOpenBlockId((currentId) => (currentId === blockId ? null : blockId));
+    if (!activePart) {
       return;
     }
 
-    setFocusedBlockId(blockId);
+    const blockKey = getBlockKey(activePart.id, blockId);
+    setActivePdfPage(pageNumber);
+
+    if (focusedBlockId === blockKey) {
+      setAskOpenBlockId((currentId) => (currentId === blockKey ? null : blockKey));
+      return;
+    }
+
+    setFocusedBlockId(blockKey);
     setAskOpenBlockId(null);
   }
 
@@ -686,13 +783,14 @@ export default function App() {
       return;
     }
 
-    const question = questionDrafts[blockId]?.trim();
+    const blockKey = getBlockKey(activePart.id, blockId);
+    const question = questionDrafts[blockKey]?.trim();
 
     if (!question) {
       return;
     }
 
-    setAskingBlockIds((currentIds) => new Set(currentIds).add(blockId));
+    setAskingBlockIds((currentIds) => new Set(currentIds).add(blockKey));
 
     try {
       const answer = await askAboutLessonBlock({
@@ -702,21 +800,22 @@ export default function App() {
         blockHeading: activeLesson?.blocks.find((block) => block.id === blockId)?.heading ?? "",
         blockBody: activeLesson?.blocks.find((block) => block.id === blockId)?.body ?? "",
         question,
+        modelId: selectedAskModelId,
       });
       setAnswersByBlock((currentAnswers) => ({
         ...currentAnswers,
-        [blockId]: [...(currentAnswers[blockId] ?? []), answer],
+        [blockKey]: [...(currentAnswers[blockKey] ?? []), answer],
       }));
       setQuestionDrafts((currentDrafts) => ({
         ...currentDrafts,
-        [blockId]: "",
+        [blockKey]: "",
       }));
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "追问失败。");
     } finally {
       setAskingBlockIds((currentIds) => {
         const nextIds = new Set(currentIds);
-        nextIds.delete(blockId);
+        nextIds.delete(blockKey);
         return nextIds;
       });
     }
@@ -748,45 +847,15 @@ export default function App() {
             )}`,
           )}
 
-          <section className="learning-toolbar" aria-label="学习操作">
-            <button
-              type="button"
-              onClick={() => selectAdjacentPart(-1)}
-              disabled={activePartIndex <= 0}
-            >
-              ← 上一部分
-            </button>
-
-            <label className="file-switcher">
-              <span>当前资料</span>
-              <select
-                value={activeFile?.id ?? ""}
-                onChange={(event) => navigateToFile(event.target.value)}
-              >
-                {courseSession.files.map((file) => (
-                  <option key={file.id} value={file.id}>
-                    {file.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div className="generation-status">
-              <span className={prefetchingIds.size > 0 ? "status-dot active" : "status-dot"} />
-              <span>
-                {prefetchingIds.size > 0
-                  ? `后台生成 ${prefetchingIds.size} 个后续部分`
-                  : "后续讲解会提前生成"}
-              </span>
+          <section className="topbar-active-part" aria-label="当前讲解">
+            <div>
+              <strong>{activePart.title}</strong>
+              <span>{activePart.description}</span>
             </div>
-
-            <button
-              type="button"
-              onClick={() => selectAdjacentPart(1)}
-              disabled={activePartIndex >= courseSession.parts.length - 1}
-            >
-              下一部分 →
-            </button>
+            <small>
+              {activePartIndex + 1} / {courseSession.parts.length} · PDF 第 {activePart.pageStart}
+              {activePart.pageEnd !== activePart.pageStart ? `-${activePart.pageEnd}` : ""} 页
+            </small>
           </section>
 
           <div className="topbar-actions">
@@ -850,19 +919,6 @@ export default function App() {
           </aside>
 
           <section className="reader-main">
-            <section className="section-controls">
-              <div className="active-part-title">
-                <div>
-                  <strong>{activePart.title}</strong>
-                  <span>{activePart.description}</span>
-                </div>
-                <small>
-                  {activePartIndex + 1} / {courseSession.parts.length} · PDF 第 {activePart.pageStart}
-                  {activePart.pageEnd !== activePart.pageStart ? `-${activePart.pageEnd}` : ""} 页
-                </small>
-              </div>
-            </section>
-
             {error ? <p className="error-message learning-error">{error}</p> : null}
 
             <section className="split-reader">
@@ -904,73 +960,80 @@ export default function App() {
                 {activeLesson ? (
                   <div className="lesson-content">
                     <h1>{activeLesson.title}</h1>
-                    {activeLesson.blocks.map((block) => (
-                      <section
-                        key={block.id}
-                        className={`lesson-block ${focusedBlockId === block.id ? "focused" : ""}`}
-                        onClick={() => handleBlockClick(block.id, block.pageNumber)}
-                      >
-                        <h2>{block.heading}</h2>
-                        <div className="rich-text">{renderRichText(block.body)}</div>
-                        <div className="block-actions">
-                          <span>对应 PDF 第 {block.pageNumber} 页</span>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setAskOpenBlockId((currentId) =>
-                                currentId === block.id ? null : block.id,
-                              );
-                              setFocusedBlockId(block.id);
-                              setActivePdfPage(block.pageNumber);
-                            }}
-                          >
-                            追问这一点
-                          </button>
-                        </div>
-                        {answersByBlock[block.id]?.map((answer, index) => (
-                          <article key={`${block.id}-answer-${index}`} className="follow-up-answer">
-                            {answer.question ? (
-                              <p className="follow-up-question">追问：{answer.question}</p>
-                            ) : null}
-                            <strong>补充解释</strong>
-                            <div className="rich-text">{renderRichText(answer.answer)}</div>
-                          </article>
-                        ))}
-                        {askOpenBlockId === block.id ? (
-                          <form
-                            className="ask-box"
-                            onClick={(event) => event.stopPropagation()}
-                            onSubmit={(event) => {
-                              event.preventDefault();
-                              submitQuestion(block.id);
-                            }}
-                          >
-                            <textarea
-                              value={questionDrafts[block.id] ?? ""}
-                              onChange={(event) =>
-                                setQuestionDrafts((currentDrafts) => ({
-                                  ...currentDrafts,
-                                  [block.id]: event.target.value,
-                                }))
-                              }
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" && !event.shiftKey) {
-                                  event.preventDefault();
-                                  if (!askingBlockIds.has(block.id)) {
-                                    submitQuestion(block.id);
-                                  }
-                                }
+                    {activeLesson.blocks.map((block) => {
+                      const blockKey = getBlockKey(activePart.id, block.id);
+
+                      return (
+                        <section
+                          key={blockKey}
+                          className={`lesson-block ${focusedBlockId === blockKey ? "focused" : ""}`}
+                          onClick={() => handleBlockClick(block.id, block.pageNumber)}
+                        >
+                          <h2>{block.heading}</h2>
+                          <div className="rich-text">{renderRichText(block.body)}</div>
+                          <div className="block-actions">
+                            <span>对应 PDF 第 {block.pageNumber} 页</span>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setAskOpenBlockId((currentId) =>
+                                  currentId === blockKey ? null : blockKey,
+                                );
+                                setFocusedBlockId(blockKey);
+                                setActivePdfPage(block.pageNumber);
                               }}
-                              placeholder="哪里没看懂？可以继续问这个知识点。"
-                            />
-                            <button type="submit" disabled={askingBlockIds.has(block.id)}>
-                              {askingBlockIds.has(block.id) ? "回答中..." : "发送追问"}
+                            >
+                              追问这一点
                             </button>
-                          </form>
-                        ) : null}
-                      </section>
-                    ))}
+                          </div>
+                          {answersByBlock[blockKey]?.map((answer, index) => (
+                            <article key={`${blockKey}-answer-${index}`} className="follow-up-answer">
+                              {answer.question ? (
+                                <p className="follow-up-question">追问：{answer.question}</p>
+                              ) : null}
+                              <strong>补充解释</strong>
+                              <div className="rich-text">{renderRichText(answer.answer)}</div>
+                            </article>
+                          ))}
+                          {askOpenBlockId === blockKey ? (
+                            <form
+                              className="ask-box"
+                              onClick={(event) => event.stopPropagation()}
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                submitQuestion(block.id);
+                              }}
+                            >
+                              <textarea
+                                value={questionDrafts[blockKey] ?? ""}
+                                onChange={(event) =>
+                                  setQuestionDrafts((currentDrafts) => ({
+                                    ...currentDrafts,
+                                    [blockKey]: event.target.value,
+                                  }))
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" && !event.shiftKey) {
+                                    event.preventDefault();
+                                    if (!askingBlockIds.has(blockKey)) {
+                                      submitQuestion(block.id);
+                                    }
+                                  }
+                                }}
+                                placeholder="哪里没看懂？可以继续问这个知识点。"
+                              />
+                              <div className="ask-box-footer">
+                                {renderModelSelect(selectedAskModelId, updateAskModelId, "追问模型", false)}
+                                <button type="submit" disabled={askingBlockIds.has(blockKey)}>
+                                  {askingBlockIds.has(blockKey) ? "回答中..." : "发送追问"}
+                                </button>
+                              </div>
+                            </form>
+                          ) : null}
+                        </section>
+                      );
+                    })}
 
                     {activeLesson.terms.length > 0 ? (
                       <section className="terms-section">
@@ -993,6 +1056,47 @@ export default function App() {
             </section>
           </section>
         </section>
+
+        <section className="learning-toolbar" aria-label="学习操作">
+          <button
+            type="button"
+            onClick={() => selectAdjacentPart(-1)}
+            disabled={activePartIndex <= 0}
+          >
+            ← 上一部分
+          </button>
+
+          <label className="file-switcher">
+            <span>当前资料</span>
+            <select
+              value={activeFile?.id ?? ""}
+              onChange={(event) => navigateToFile(event.target.value)}
+            >
+              {courseSession.files.map((file) => (
+                <option key={file.id} value={file.id}>
+                  {file.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="generation-status">
+            <span className={prefetchingIds.size > 0 ? "status-dot active" : "status-dot"} />
+            <span>
+              {prefetchingIds.size > 0
+                ? `后台生成 ${prefetchingIds.size} 个后续部分`
+                : "后续讲解会提前生成"}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => selectAdjacentPart(1)}
+            disabled={activePartIndex >= courseSession.parts.length - 1}
+          >
+            下一部分 →
+          </button>
+        </section>
       </main>
     );
   }
@@ -1009,6 +1113,8 @@ export default function App() {
           <h1>上传课程资料</h1>
           <p>上传后会先生成课件目录，再按目录逐部分完整讲解。</p>
         </div>
+
+        {renderModelSelect(selectedUploadModelId, setSelectedUploadModelId, "生成模型")}
 
         <label
           className={isDraggingFiles ? "file-drop drag-over" : "file-drop"}
